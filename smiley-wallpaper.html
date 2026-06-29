@@ -1,0 +1,567 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Code Face</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #04100f; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// ===========================================================================
+//  Negative-space ASCII smiley.  Expression tiers (1 "cycle" = 14s mouth beat):
+//    - mouth open/close ............ every 14s
+//    - suspicious eyes ............. every 18s
+//    - manic Cheshire grin ......... every ~140s (10 cycles)
+//    - ULTRA RARE manic + teeth .... every ~700s (50 cycles)
+//    - LEGENDARY sad face + tear + rainbow ripple ... every ~2800s (200 cycles)
+// ===========================================================================
+const BG = '#04100f';
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+
+const off = document.createElement('canvas');
+const octx = off.getContext('2d');
+
+const mcA = document.createElement('canvas');   // sharp face mask
+const mcB = document.createElement('canvas');   // blurred face mask
+
+let W, H, FX, FY, FR;
+let targetFX = 0, targetFY = 0, lastDodgeAt = -1e9, disapproveUntil = 0, lastWindowProbe = -1e9;
+const CELL = 15;
+let cols, rows;
+let rnd, bright, field, fieldTmp;
+let ma, mb;
+let lastMO = 0, lastES = 0, lastMA = 0, lastTeeth = 0, lastSA = 0, lastUA = 0, wasDrop = false, wasManic = false;
+
+// Eye gaze (mouse tracking) â€” offsets in cell units, rotation in radians.
+let mouseX = null, mouseY = null;
+let gazeX = 0, gazeY = 0, gazeRot = 0;
+let lastGX = 0, lastGY = 0, lastGR = 0;
+window.addEventListener('mousemove', e => { mouseX = e.clientX; mouseY = e.clientY; });
+
+// Excited expression â€” event-driven (desktop icon clicks / app launches).
+let excite = 0, exciteGoal = 0, exciteHoldUntil = 0, lastEX = 0;
+function triggerExcited(level, holdMs) {
+  exciteGoal = Math.max(exciteGoal, level);
+  exciteHoldUntil = Math.max(exciteHoldUntil, performance.now() + holdMs);
+}
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+// The face wants to live at the centre of the largest space NOT covered by windows.
+// It follows that centre as windows move/resize: shoved off (covered) -> relocate
+// annoyed; free space just changed -> quietly re-centre.
+function moveFaceTowardGap(m) {
+  if (!m || typeof m.targetX !== 'number') return;
+  const now = performance.now();
+  const marginX = Math.min(W * 0.32, Math.max(90, FR * 0.42));
+  const marginY = Math.min(H * 0.32, Math.max(90, FR * 0.42));
+  const nextX = clamp(clamp(Number(m.targetX), 0.04, 0.96) * W, marginX, W - marginX);
+  const nextY = clamp(clamp(Number(m.targetY), 0.05, 0.95) * H, marginY, H - marginY);
+  const moved = Math.hypot(nextX - targetFX, nextY - targetFY) > Math.max(70, FR * 0.18);
+  const covered = typeof m.faceCoverage === 'number' && m.faceCoverage >= 0.55;
+
+  if (covered) {
+    // A window pushed onto him -> reconquer the biggest free area, looking annoyed.
+    if (moved && now - lastDodgeAt > 1500) {
+      targetFX = nextX; targetFY = nextY; lastDodgeAt = now;
+      disapproveUntil = now + 2400;
+    }
+  } else if (moved) {
+    // Free space changed (window resized / closed) -> calmly re-centre, no fuss.
+    targetFX = nextX; targetFY = nextY;
+  }
+}
+// Local desktop helper over WebSocket; reconnects quietly if it isn't running.
+const HELPER_PORT = 17346;
+let helperWS = null, helperReady = false;
+function connectHelper() {
+  let ws;
+  try { ws = new WebSocket('ws://127.0.0.1:' + HELPER_PORT); }
+  catch (e) { setTimeout(connectHelper, 2000); return; }
+  ws.onopen = () => { helperWS = ws; helperReady = true; };
+  ws.onmessage = ev => {
+    let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+    if (m.type === 'reply' && m.text)  { spawnReply(frameNow, m.text); awaitingReplySince = 0; }
+    else if (m.type === 'windowCoverage') moveFaceTowardGap(m);
+    else if (m.type === 'iconClick')   triggerExcited(0.70, 700);   // excited
+    else if (m.type === 'appLaunch')   triggerExcited(1.00, 350);   // brief extra-excited flash
+  };
+  ws.onclose = () => { helperReady = false; helperWS = null; setTimeout(connectHelper, 2000); };
+  ws.onerror = () => { try { ws.close(); } catch (e) {} };
+}
+connectHelper();
+// Clicking around the desktop nudges the face (Lively forwards clicks too).
+window.addEventListener('mousedown', () => triggerExcited(0.60, 600));
+
+// --- Typing echo: keystrokes briefly overwrite the random field, fading like a
+// wave; after 5s of silence a creepy reply surfaces in the opposite corner. ---
+const overrides = new Map();              // cell idx -> {ch, born, life, reply}
+let frameNow = 0;
+let typeI = 8, typeJ = 4;                 // next type cell: 4 lines down, 8 from the west
+let lastTypeTime = -1e9, typedSomething = false, replyShown = false;
+let typedPhrase = '', awaitingReplySince = 0;
+const REPLIES = [
+  "I SEE YOU", "WHY DID YOU STOP", "I KNOW", "KEEP TYPING", "I AM STILL HERE",
+  "DO NOT LOOK AWAY", "WE REMEMBER", "YOU ARE NOT ALONE", "I FELT THAT",
+  "SAY IT AGAIN", "HELLO AGAIN", "I WAS WAITING"
+];
+// Typed text anchor: 20 lines above the eye centre, 60 chars to its left.
+function typeAnchor() {
+  const R = FR / CELL;
+  return {
+    i: Math.max(1, Math.round(FX / CELL - 60)),
+    j: Math.max(1, Math.round(FY / CELL - 0.24 * R - 20))
+  };
+}
+function typeChar(ch) {
+  const now = performance.now();
+  if (now - lastTypeTime > 3000) { const a = typeAnchor(); typeI = a.i; typeJ = a.j; typedPhrase = ''; }  // fresh line after a pause
+  lastTypeTime = now; typedSomething = true; replyShown = false;
+  typedPhrase += ch;
+  overrides.set(typeJ * cols + typeI, { ch, born: now, life: 2800, reply: false });
+  const a = typeAnchor();
+  if (++typeI > cols - 4) { typeI = a.i; if (++typeJ > a.j + 6) typeJ = a.j; }
+}
+function spawnReply(now, msg) {             // 20 lines below + 5 right of the mouth's right corner
+  if (!msg) msg = REPLIES[(Math.random() * REPLIES.length) | 0];
+  const R = FR / CELL;
+  const startI = Math.round(FX / CELL + 0.72 * R + 15);
+  const jr = Math.min(rows - 1, Math.round(FY / CELL + 0.10 * R + 20));
+  for (let k = 0; k < msg.length; k++) {
+    if (msg[k] === ' ') continue;          // spaces stay random
+    const i = startI + k;
+    if (i >= cols - 1) break;
+    overrides.set(jr * cols + i, { ch: msg[k], born: now + k * 90, life: 4500, reply: true });
+  }
+}
+// E stays the excited react source; all printable keys are echoed (letters uppercased,
+// spaces and punctuation kept). Modifier combos (Ctrl/Alt/Win) are ignored.
+window.addEventListener('keydown', e => {
+  const k = e.key;
+  if (k.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    const ch = /[a-z]/i.test(k) ? k.toUpperCase() : k;
+    if (ch === 'E') triggerExcited(0.70, 700);
+    typeChar(ch);
+  }
+});
+
+const THICK = "0#$%@&8BWM6Â£".split('');
+const THIN  = ".,:;'\"-=+~^/\\".split('');
+const EDGE = 0.60;
+
+function teal(a) { return 'rgba(80,225,200,' + a + ')'; }
+function smoothstep(a, b, x) { if (x <= a) return 0; if (x >= b) return 1; const t = (x - a) / (b - a); return t * t * (3 - 2 * t); }
+function lerp(a, b, u) { return a + (b - a) * u; }
+function bez(a, b, c, u) { const m = 1 - u; return m * m * a + 2 * m * u * b + u * u * c; }
+
+// ---- Shape primitives ----
+function drawArrow(c, cx, cy, hw, hUp, hDown, notch, skewX) {
+  c.beginPath();
+  c.moveTo(cx + skewX, cy - hUp);
+  c.lineTo(cx + hw, cy + hDown);
+  c.lineTo(cx, cy + notch);
+  c.lineTo(cx - hw, cy + hDown);
+  c.closePath();
+  c.fill();
+}
+
+// One continuous mouth: normal/manic crescent (sA=0) morphing to a flat
+// round-capped bar (sA=1). mO opens it, mA curls it into the manic grin.
+function drawMouth(c, cx, cy, R, mO, mA, sA, wide) {
+  const L = (x, y) => x + (y - x) * mA;
+  const mw  = L(0.72 * R * (1 + 0.14 * wide), 1.05 * R);
+  const mcy = L(cy + 0.10 * R, cy - 0.42 * R);
+  const dB  = L(0.53 * R + 0.12 * R * mO, 0.82 * R);
+  const dT  = L(0.15 * R - 0.13 * R * mO, 0.60 * R);
+  const barW = 0.30 * R, barY = cy + 0.20 * R, barTh = 0.085 * R;
+  const N = 24, top = [], bot = [];
+  for (let i = 0; i <= N; i++) {
+    const u = i / N;
+    const x  = bez(cx - mw, cx, cx + mw, u);
+    const yB = bez(mcy, mcy + 2 * dB, mcy, u);
+    const yT = bez(mcy, mcy + 2 * dT, mcy, u);
+    const center = lerp((yT + yB) / 2, barY, sA);
+    const th     = lerp(yB - yT, barTh, sA);
+    const px     = lerp(x, cx - barW + 2 * barW * u, sA);
+    top.push([px, center - th / 2]);
+    bot.push([px, center + th / 2]);
+  }
+  c.beginPath();
+  c.moveTo(top[0][0], top[0][1]);
+  for (let i = 1; i <= N; i++) c.lineTo(top[i][0], top[i][1]);
+  for (let i = N; i >= 0; i--)  c.lineTo(bot[i][0], bot[i][1]);
+  c.closePath();
+  c.fill();
+  const capR = lerp(0, barTh / 2, sA);
+  if (capR > 0.01) {
+    const lx = lerp(cx - mw, cx - barW, sA), rx = lerp(cx + mw, cx + barW, sA), cyEnd = lerp(mcy, barY, sA);
+    c.beginPath(); c.arc(lx, cyEnd, capR, 0, Math.PI * 2); c.fill();
+    c.beginPath(); c.arc(rx, cyEnd, capR, 0, Math.PI * 2); c.fill();
+  }
+}
+
+// Sharp interlocking teeth carved (black) into the manic mouth.
+function drawTeeth(c, cx, mw, mcy, dB, dT, n, amt) {
+  c.fillStyle = '#000';
+  const X  = u => bez(cx - mw, cx, cx + mw, u);
+  const yT = u => bez(mcy, mcy + 2 * dT, mcy, u);
+  const yB = u => bez(mcy, mcy + 2 * dB, mcy, u);
+  for (let k = 0; k < n; k++) {
+    const u0 = k / n, u1 = (k + 1) / n, um = (u0 + u1) / 2, th = yB(um) - yT(um);
+    c.beginPath(); c.moveTo(X(u0), yT(u0)); c.lineTo(X(u1), yT(u1)); c.lineTo(X(um), yT(um) + th * 0.62 * amt); c.closePath(); c.fill();
+  }
+  for (let k = 0; k < n; k++) {
+    const u0 = (k + 0.5) / n, u1 = (k + 1.5) / n; if (u1 > 1) break;
+    const um = (u0 + u1) / 2, th = yB(um) - yT(um);
+    c.beginPath(); c.moveTo(X(u0), yB(u0)); c.lineTo(X(u1), yB(u1)); c.lineTo(X(um), yB(um) - th * 0.62 * amt); c.closePath(); c.fill();
+  }
+  c.fillStyle = '#fff';
+}
+
+// Teardrop carved into the mask (cell units), pointed top + round bottom.
+function drawTear(c, x, y, rx, ry) {
+  c.beginPath();
+  c.moveTo(x, y - ry * 1.7);
+  c.quadraticCurveTo(x + rx, y, x, y + ry);
+  c.quadraticCurveTo(x - rx, y, x, y - ry * 1.7);
+  c.closePath();
+  c.fill();
+}
+
+// ---- Expression timing ----
+function mouthOpen(t)  { const p = t % 14;  return smoothstep(6.0, 6.6, p) * (1 - smoothstep(12.0, 13.0, p)); }
+function eyeSerious(t) { const p = t % 18;  return smoothstep(8.0, 9.0, p) * (1 - smoothstep(13.0, 14.5, p)); }
+function manicAmount(t){ const p = t % 140; return smoothstep(63.0, 70.0, p) * (1 - smoothstep(76.0, 77.2, p)); }
+function ultraAmount(t){ const p = t % 700; return smoothstep(343.0, 350.0, p) * (1 - smoothstep(356.0, 357.2, p)); }
+
+// Legendary sad event: timeline relative to the start of its 2800s window.
+const LEG_PERIOD = 2800, LEG_START = 1400;
+const SAD_IN = [2, 6.5];     // smile -> sad (slow)
+const DROP   = [6.5, 9.5];   // tear forms and falls (lands at 9.5)
+const RIPPLE_START = 9.5;    // rainbow ripple begins on impact
+
+// ---- Build the per-cell field from every active expression ----
+function buildFieldInto(target, mO, eS, mA, teeth, sA, eX, uA, drop, prev) {
+  const cx = FX / CELL, cy = FY / CELL, R = FR / CELL;
+
+  ma.fillStyle = '#000'; ma.fillRect(0, 0, cols, rows);
+  ma.fillStyle = '#fff'; ma.strokeStyle = '#fff'; ma.lineCap = 'round';
+
+  // EYES â€” arrowheads (normal/suspicious/unamused) cross-fading to manic dots or sad smiles.
+  const eScale = (1 - mA) * (1 - sA);
+  const eSe = Math.min(1, (eS + 1.1 * uA) * (1 - sA));   // unamused half-lids/narrows the eyes
+  if (eScale > 0.02) {
+    const eyeY  = cy - 0.24 * R + 0.05 * R * eSe;
+    const hUp   = 0.20 * R * (1 - 0.55 * eSe) * eScale;
+    const hDown = 0.14 * R * (1 - 0.30 * eSe) * eScale;
+    const hw    = 0.15 * R * (1 - 0.10 * eSe) * eScale;
+    const skew  = 0.07 * R * eSe * eScale;
+    const notch = 0.04 * R * eScale;
+    // Translate toward the cursor and tilt slightly on a rotational axis.
+    ma.save(); ma.translate(cx - 0.32 * R + gazeX, eyeY + gazeY); ma.rotate(gazeRot);
+    drawArrow(ma, 0, 0, hw, hUp, hDown, notch,  skew); ma.restore();
+    ma.save(); ma.translate(cx + 0.32 * R + gazeX, eyeY + gazeY); ma.rotate(gazeRot);
+    drawArrow(ma, 0, 0, hw, hUp, hDown, notch, -skew); ma.restore();
+  }
+  if (mA > 0.02) {                         // manic round dots
+    const er = 0.06 * R * mA, myy = cy - 0.20 * R;
+    ma.beginPath(); ma.arc(cx - 0.30 * R + gazeX, myy + gazeY, er, 0, Math.PI * 2); ma.fill();
+    ma.beginPath(); ma.arc(cx + 0.30 * R + gazeX, myy + gazeY, er, 0, Math.PI * 2); ma.fill();
+  }
+  if (sA > 0.02) {                         // sad smile-eyes + worried brows
+    const eyeY = lerp(cy - 0.24 * R, cy - 0.12 * R, sA) + gazeY, ew = 0.12 * R, ebow = 0.07 * R;
+    ma.lineWidth = 0.055 * R * sA;
+    for (const sx of [-1, 1]) {
+      const ex = cx + sx * 0.30 * R + gazeX;
+      ma.beginPath(); ma.moveTo(ex - ew, eyeY); ma.quadraticCurveTo(ex, eyeY + 2 * ebow, ex + ew, eyeY); ma.stroke();
+    }
+    const browY = eyeY - 0.17 * R, bw = 0.12 * R, slant = 0.06 * R, arch = 0.04 * R;
+    ma.lineWidth = 0.05 * R * sA;
+    for (const sx of [-1, 1]) {
+      const bx = cx + sx * 0.30 * R + gazeX;
+      ma.beginPath(); ma.moveTo(bx - sx * bw, browY - slant); ma.quadraticCurveTo(bx, browY - arch, bx + sx * bw, browY + slant); ma.stroke();
+    }
+  }
+
+  // MOUTH. Sad OR unamused flattens it to a bar.
+  const mouthSad = Math.max(sA, 0.80 * uA);
+  if (mA > 0.001) {
+    // Manic grin: two-quad crescent with teeth carved into the SAME geometry, so
+    // teeth always sit inside the mouth. The mO terms match the normal mouth at the
+    // edge of the morph, so it returns to the regular face without a jump.
+    const L = (x, y) => x + (y - x) * mA;
+    const mOeff = mO * (1 - sA);
+    const mw  = L(0.72 * R * (1 + 0.14 * eX), 1.05 * R);
+    const mcy = L(cy + 0.10 * R, cy - 0.42 * R);
+    const dB  = L(0.53 * R + 0.12 * R * mOeff, 0.82 * R);
+    const dT  = L(0.15 * R - 0.13 * R * mOeff, 0.60 * R);
+    ma.beginPath();
+    ma.moveTo(cx - mw, mcy);
+    ma.quadraticCurveTo(cx, mcy + 2 * dB, cx + mw, mcy);
+    ma.quadraticCurveTo(cx, mcy + 2 * dT, cx - mw, mcy);
+    ma.closePath();
+    ma.fill();
+    const tAmt = teeth * smoothstep(0.35, 0.85, mA);   // teeth follow the grin, never lead it
+    if (tAmt > 0.02) drawTeeth(ma, cx, mw, mcy, dB, dT, 12, tAmt);
+  } else {
+    // Normal / excited / sad / unamused mouth: continuous crescent -> bar morph.
+    drawMouth(ma, cx, cy, R, Math.min(1.1, mO * (1 - mouthSad) + 0.70 * eX), 0, mouthSad, eX);
+  }
+
+  // TEAR â€” legendary, carved hole falling to the floor.
+  if (drop) drawTear(ma, drop.x / CELL, drop.y / CELL, drop.rx / CELL, drop.ry / CELL);
+
+  // Dilated copy -> thin outline ring.
+  mb.clearRect(0, 0, cols, rows);
+  mb.filter = 'blur(2px)';
+  mb.drawImage(mcA, 0, 0);
+  mb.filter = 'none';
+
+  const sharp = ma.getImageData(0, 0, cols, rows).data;
+  const soft  = mb.getImageData(0, 0, cols, rows).data;
+  for (let p = 0; p < cols * rows; p++) {
+    const s = sharp[p * 4] / 255, g = soft[p * 4] / 255;
+    if (prev) {
+      const pv = prev[p], wasDark = pv < 0, wasThin = pv >= 0 && pv < EDGE;
+      if (s > 0.5 || (wasDark && s > 0.35)) target[p] = -1;
+      else if (wasThin ? g > 0.12 : g > 0.28) target[p] = 0.3;
+      else target[p] = 1;
+    } else {
+      if (s > 0.5)      target[p] = -1;
+      else if (g > 0.2) target[p] = 0.3;
+      else              target[p] = 1;
+    }
+  }
+}
+
+function categoryOf(v) { return v < 0 ? 0 : (v < EDGE ? 1 : 2); }
+
+function drawCell(i, j) {
+  const x = i * CELL, y = j * CELL, idx = j * cols + i;
+  octx.fillStyle = BG;
+  octx.fillRect(x, y, CELL, CELL);
+  const vis = field[idx];
+  if (vis < 0) return;
+  const ov = overrides.get(idx);
+  if (ov) {
+    const age = frameNow - ov.born;
+    if (age >= 0 && age < ov.life) {       // typed/reply char, fading white -> teal
+      const f = age / ov.life, a = 1 - f;
+      const r = (220 - 140 * f) | 0, g = (255 - 30 * f) | 0, b = (250 - 50 * f) | 0;
+      octx.fillStyle = 'rgba(' + r + ',' + g + ',' + b + ',' + (0.4 + 0.6 * a) + ')';
+      octx.fillText(ov.ch, x + CELL / 2, y + CELL / 2);
+      return;
+    }
+  }
+  const set = vis < EDGE ? THIN : THICK;
+  const ch = set[(rnd[idx] * set.length) | 0];
+  octx.fillStyle = teal(0.55 + 0.40 * bright[idx]);
+  octx.fillText(ch, x + CELL / 2, y + CELL / 2);
+}
+
+function renderFieldFull() {
+  octx.fillStyle = BG;
+  octx.fillRect(0, 0, W, H);
+  octx.font = CELL + 'px "Consolas","Courier New",monospace';
+  octx.textAlign = 'center';
+  octx.textBaseline = 'middle';
+  for (let j = 0; j < rows; j++)
+    for (let i = 0; i < cols; i++)
+      drawCell(i, j);
+}
+
+function resize() {
+  W = canvas.width = off.width = window.innerWidth;
+  H = canvas.height = off.height = window.innerHeight;
+  FX = W / 2; FY = H / 2;
+  targetFX = FX; targetFY = FY;
+  FR = Math.min(W, H) * 0.46;
+  cols = Math.ceil(W / CELL) + 1;
+  rows = Math.ceil(H / CELL) + 1;
+  mcA.width = mcB.width = cols;
+  mcA.height = mcB.height = rows;
+  ma = mcA.getContext('2d');
+  mb = mcB.getContext('2d');
+  const n = cols * rows;
+  rnd = new Float32Array(n);
+  bright = new Float32Array(n);
+  field = new Float32Array(n);
+  fieldTmp = new Float32Array(n);
+  for (let i = 0; i < n; i++) { rnd[i] = Math.random(); bright[i] = Math.random(); }
+  buildFieldInto(field, 0, 0, 0, 0, 0, 0, 0, null);
+  lastMO = 0; lastES = 0; lastMA = 0; lastTeeth = 0; lastSA = 0; lastEX = 0; wasDrop = false;
+  renderFieldFull();
+}
+window.addEventListener('resize', resize);
+resize();
+
+function render(now) {
+  const t = (now || 0) / 1000;
+  const n = cols * rows;
+  frameNow = now || 0;
+
+  if (helperReady && helperWS && frameNow - lastWindowProbe > 1600) {
+    const fHW = FR * 0.80, fHH = FR * 0.55;   // face bounding box (the "empty char" footprint)
+    try { helperWS.send(JSON.stringify({ type: "windowProbe", width: W, height: H,
+      faceL: Math.round(FX - fHW), faceT: Math.round(FY - fHH),
+      faceR: Math.round(FX + fHW), faceB: Math.round(FY + fHH) })); } catch (e) {}
+    lastWindowProbe = frameNow;
+  }
+
+  const oldFX = FX, oldFY = FY;
+  FX += (targetFX - FX) * 0.035;
+  FY += (targetFY - FY) * 0.035;
+  const faceMoved = Math.abs(FX - oldFX) > 0.05 || Math.abs(FY - oldFY) > 0.05;
+
+  // 5s after the typing stops: ask the helper (creepy file-aware reply), else canned.
+  if (typedSomething && !replyShown && frameNow - lastTypeTime > 5000) {
+    if (helperReady && helperWS) {
+      try { helperWS.send(JSON.stringify({ type: 'typed', text: typedPhrase })); } catch (e) {}
+      awaitingReplySince = frameNow;
+    } else {
+      spawnReply(frameNow);
+    }
+    replyShown = true; typedSomething = false; typedPhrase = '';
+  }
+  // Helper went quiet -> fall back to a canned line.
+  if (awaitingReplySince && frameNow - awaitingReplySince > 6000) { spawnReply(frameNow); awaitingReplySince = 0; }
+
+  // --- Expression signals ---
+  const mO = mouthOpen(t), eS = eyeSerious(t);
+  const mAraw = Math.max(manicAmount(t), ultraAmount(t));
+  const teethRaw = ultraAmount(t);
+
+  // --- Legendary sad event timeline + rainbow geometry ---
+  const legP = ((t % LEG_PERIOD) + LEG_PERIOD) % LEG_PERIOD;
+  const lt = legP - LEG_START;
+  const dropX = FX + 0.47 * FR, yStart = FY - 0.06 * FR;
+  const maxR = Math.hypot(Math.max(dropX, W - dropX), H);
+  const speed = maxR / 2.6, band = 240;
+  const rt = lt - RIPPLE_START;
+  const faceDist = Math.hypot(FX - dropX, H - FY);
+  const wash = rt >= 0 ? smoothstep(faceDist - 0.6 * FR, faceDist + 0.6 * FR, rt * speed) : 0;
+  const sA = (lt >= 0 && lt < 16) ? smoothstep(SAD_IN[0], SAD_IN[1], lt) * (1 - wash) : 0;  // sad = legendary event only
+  const disapproveLeft = Math.max(0, disapproveUntil - frameNow);
+  const uA = disapproveLeft > 0 ? Math.min(0.92, smoothstep(0, 350, 2400 - disapproveLeft) * (1 - smoothstep(1700, 2400, 2400 - disapproveLeft))) : 0;  // unamused = when dodging a window
+  const block = Math.max(sA, uA);
+
+  // Manic/teeth give way to sad/unamused when the (rare) windows collide.
+  const mA = mAraw * (1 - block);
+  const teeth = teethRaw * (1 - block);
+
+  // Excited expression envelope (decays after a short hold), yields to manic/sad/unamused.
+  const nowMs = now || 0;
+  if (nowMs > exciteHoldUntil) exciteGoal *= 0.95;   // slow revert
+  excite += (exciteGoal - excite) * 0.07;            // slow open
+  if (excite < 0.004 && exciteGoal < 0.004) { excite = 0; exciteGoal = 0; }
+  const eX = excite * (1 - mA) * (1 - block);
+
+  // Falling tear (carved into the field while it drops).
+  const dropActive = (lt >= DROP[0] && lt < RIPPLE_START);
+  let drop = null;
+  if (dropActive) {
+    const u = (lt - DROP[0]) / (DROP[1] - DROP[0]);
+    const rx = (0.04 * FR) * smoothstep(0, 0.15, u);
+    const ry = rx * (1.5 + 1.0 * u);
+    drop = { x: dropX, y: lerp(yStart, H, u * u), rx: Math.max(rx, 1), ry: Math.max(ry, 1) };
+  }
+
+  // --- Eye gaze: gently ease toward the cursor (translate + slight tilt) ---
+  const ampX = (FR / CELL) * 0.045;   // tiny horizontal travel
+  const ampY = (FR / CELL) * 0.016;   // even tinier vertical travel
+  const mx = (mouseX == null) ? FX : mouseX, my = (mouseY == null) ? FY : mouseY;
+  const nx = Math.max(-1, Math.min(1, (mx - FX) / (W * 0.5)));   // full-width reach
+  const ny = Math.max(-1, Math.min(1, (my - FY) / (H * 0.5)));   // full-height reach
+  const EASE = 0.025;                  // very slow, creeping follow
+  gazeX   += (nx * ampX - gazeX) * EASE;
+  gazeY   += (ny * ampY - gazeY) * EASE;
+  gazeRot += (nx * 0.11 - gazeRot) * EASE;
+  const eyesDirty = Math.abs(gazeX - lastGX) > 0.004 || Math.abs(gazeY - lastGY) > 0.004 || Math.abs(gazeRot - lastGR) > 0.0012;
+
+  // --- Rebuild the face only when something is moving ---
+  if (mO !== lastMO || eS !== lastES || mA !== lastMA || teeth !== lastTeeth || sA !== lastSA ||
+      Math.abs(eX - lastEX) > 0.004 || Math.abs(uA - lastUA) > 0.004 || dropActive || wasDrop || eyesDirty || faceMoved) {
+    buildFieldInto(fieldTmp, mO, eS, mA, teeth, sA, eX, uA, drop, field);
+    for (let idx = 0; idx < n; idx++) {
+      const changed = categoryOf(field[idx]) !== categoryOf(fieldTmp[idx]);
+      field[idx] = fieldTmp[idx];
+      if (changed) drawCell(idx % cols, (idx / cols) | 0);
+    }
+    lastMO = mO; lastES = eS; lastMA = mA; lastTeeth = teeth; lastSA = sA; lastEX = eX; lastUA = uA;
+    lastGX = gazeX; lastGY = gazeY; lastGR = gazeRot;
+  }
+  wasDrop = dropActive;
+
+  // When a manic burst ends, repaint every cell once from the (already-correct) field
+  // so no stale character is left behind where the grin was. No field change -> no jump.
+  const manicActive = mA > 0.001 || teeth > 0.001;
+  if (!manicActive && wasManic) renderFieldFull();
+  wasManic = manicActive;
+
+  // --- Gentle shimmer on the open field ---
+  const k = Math.max(8, (n * 0.003) | 0);
+  for (let s = 0; s < k; s++) {
+    const idx = (Math.random() * n) | 0;
+    if (field[idx] < EDGE) continue;
+    rnd[idx] = Math.random();
+    bright[idx] = Math.random();
+    drawCell(idx % cols, (idx / cols) | 0);
+  }
+
+  // Animate / retire the typed + reply overrides (the fading wave).
+  if (overrides.size) {
+    for (const [idx, ov] of overrides) {
+      if (frameNow - ov.born >= ov.life) overrides.delete(idx);
+      drawCell(idx % cols, (idx / cols) | 0);
+    }
+  }
+
+  ctx.drawImage(off, 0, 0);
+
+  // --- Legendary rainbow ripple (overlay) ---
+  if (lt >= 0 && rt >= 0) {
+    const front = rt * speed;
+    if (front < maxR + band) {
+      ctx.font = CELL + 'px "Consolas","Courier New",monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      for (let j = 0; j < rows; j++) {
+        for (let i = 0; i < cols; i++) {
+          const idx = j * cols + i;
+          if (field[idx] < 0) continue;
+          const cxp = i * CELL + CELL / 2, cyp = j * CELL + CELL / 2;
+          const dist = Math.hypot(cxp - dropX, cyp - H);
+          const d = front - dist;
+          if (d < 0 || d > band) continue;
+          const env = Math.sin((d / band) * Math.PI);
+          if (env <= 0.02) continue;
+          const set = field[idx] < EDGE ? THIN : THICK;
+          const ch = set[(rnd[idx] * set.length) | 0];
+          const hue = (dist * 0.35 - rt * 90) % 360;
+          ctx.fillStyle = 'hsla(' + (hue < 0 ? hue + 360 : hue) + ',90%,65%,' + env + ')';
+          ctx.fillText(ch, cxp, cyp);
+        }
+      }
+    }
+  }
+
+  // --- Vignette ---
+  const vg = ctx.createRadialGradient(W/2, H/2, Math.min(W,H)*0.35, W/2, H/2, Math.max(W,H)*0.7);
+  vg.addColorStop(0, 'rgba(0,0,0,0)');
+  vg.addColorStop(1, 'rgba(0,10,10,0.22)');
+  ctx.fillStyle = vg;
+  ctx.fillRect(0, 0, W, H);
+
+  requestAnimationFrame(render);
+}
+requestAnimationFrame(render);
+</script>
+</body>
+</html>
+
+
+

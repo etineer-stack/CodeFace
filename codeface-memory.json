@@ -1,0 +1,84 @@
+﻿{
+    "UserName":  "ETIENNE",
+    "Facts":  [
+                  "USER_NAME=ETIENNE"
+              ],
+    "LastMessages":  [
+                         {
+                             "at":  "2026-06-29T12:03:11",
+                             "text":  "HI"
+                         },
+                         {
+                             "at":  "2026-06-29T12:03:22",
+                             "text":  "WHO ARE YOU ?"
+                         },
+                         {
+                             "at":  "2026-06-29T12:03:40",
+                             "text":  "DO YOU KNOW ME ?"
+                         },
+                         {
+                             "at":  "2026-06-29T12:06:48",
+                             "text":  "DO YOU KNOW MY NAME ?"
+                         },
+                         {
+                             "at":  "2026-06-29T12:07:03",
+                             "text":  "I AM ETIENNE"
+                         },
+                         {
+                             "at":  "2026-06-29T12:07:17",
+                             "text":  "WJA"
+                         },
+                         {
+                             "at":  "2026-06-29T12:07:34",
+                             "text":  "DO YOU FEEL ANYTHING ?"
+                         },
+                         {
+                             "at":  "2026-06-29T12:07:50",
+                             "text":  "DO YOU FEEL ?"
+                         },
+                         {
+                             "at":  "2026-06-29T12:08:11",
+                             "text":  "CAN YOU FEEL MY TYPING ?"
+                         },
+                         {
+                             "at":  "2026-06-29T12:08:26",
+                             "text":  "HELLO"
+                         },
+                         {
+                             "at":  "2026-06-29T12:09:03",
+                             "text":  "HOW ARE YOU ?"
+                         },
+                         {
+                             "at":  "2026-06-29T12:09:20",
+                             "text":  "ARE YOU HAPPY ?"
+                         },
+                         {
+                             "at":  "2026-06-29T12:09:36",
+                             "text":  "WHY ?"
+                         },
+                         {
+                             "at":  "2026-06-29T12:09:51",
+                             "text":  "I AM ETIENNE"
+                         },
+                         {
+                             "at":  "2026-06-29T12:10:10",
+                             "text":  "YES. BUT DO YOU KNOW MORE ?"
+                         },
+                         {
+                             "at":  "2026-06-29T12:10:26",
+                             "text":  "YOU SEEM LOST"
+                         }
+                     ],
+    "SuppressedTopics":  [
+
+                         ],
+    "Mood":  "precise",
+    "CurrentTopic":  "KEVIN",
+    "PreviousTopic":  "MORE",
+    "PendingQuestion":  "",
+    "Associations":  [
+
+                     ],
+    "Created":  "2026-06-29T12:02:55",
+    "Updated":  "2026-06-29T12:10:41"
+}

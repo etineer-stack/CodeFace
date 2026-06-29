@@ -1,0 +1,35 @@
+CodeFace scan report
+Generated: 2026-06-29T12:02:57
+Next periodic rescan after: 2026-06-29T12:12:57
+Memory file: C:\Users\etien\Programs\Wallpapers\CodeFace-Lively\codeface-memory.json
+Files inspected: 2737 / max per root 2500
+Scan roots:
+  C:\Users\etien\OneDrive\Documents
+  C:\Users\etien\Downloads
+Excluded folders: CodeFace, Codex, .codex, .git, .chatGPT, node_modules, backups, prototypes
+Excluded active app folder: C:\Users\etien\Programs\Wallpapers\CodeFace-Lively
+
+ETIENNE
+  contexts: work, file
+  C:\Users\etien\OneDrive\Documents\2029898 - Etienne STERCQ CV.docx
+  C:\Users\etien\OneDrive\Documents\CV Etienne STERCQ FR.doc
+  C:\Users\etien\OneDrive\Documents\CV Etienne STERCQ FR.odt
+  C:\Users\etien\OneDrive\Documents\JD Datacenter Engineer - 2029898 - Etienne STERCQ.docx
+  C:\Users\etien\OneDrive\Documents\Lettre de résiliation Etienne Stercq Sympany.pdf
+  C:\Users\etien\Downloads\Etienne_Proxmox_Sovereign_Setup.pdf
+KEVIN
+  contexts: file
+  C:\Users\etien\Downloads\amazing-plan-by-kevin-macleod-from-filmmusic-io.mp3.sfk
+  C:\Users\etien\Downloads\carefree-by-kevin-macleod-from-filmmusic-io.mp3.sfk
+  C:\Users\etien\Downloads\monkeys-spinning-monkeys-by-kevin-macleod-from-filmmusic-io.mp3.sfk
+  C:\Users\etien\Downloads\sneaky-snitch-by-kevin-macleod-from-filmmusic-io.mp3.sfk
+MONIQUE
+  contexts: housing
+  C:\Users\etien\OneDrive\Documents\CONTRAT DE SOUS LOCATION - Monique Ema.pdf
+  C:\Users\etien\OneDrive\Documents\contrat location Monique Emma.pdf
+SARAH
+  contexts: game
+  C:\Users\etien\OneDrive\Documents\AG - Janvier 2024\Theres a Killer in the Cabin\Character Sheets\Sarah McLachlan TKC Character Sheets.pdf
+EMMA
+  contexts: housing
+  C:\Users\etien\OneDrive\Documents\contrat location Monique Emma.pdf
