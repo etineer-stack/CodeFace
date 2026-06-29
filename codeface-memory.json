@@ -3,13 +3,12 @@
     "Facts":  [
                   "USER_NAME="
               ],
-    "LastMessages":  [
-                         
+    "LastMessages":  [ 
                      ],
     "SuppressedTopics":  [
 
                          ],
-    "Mood":  "precise",
+    "Mood":  "",
     "CurrentTopic":  "",
     "PreviousTopic":  "",
     "PendingQuestion":  "",
